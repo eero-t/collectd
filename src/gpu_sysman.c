@@ -926,14 +926,14 @@ static bool gpu_mems_bw(gpu_device_t *gpu) {
       uint64_t writes = bw.writeCounter - old->writeCounter;
       uint64_t reads = bw.readCounter - old->readCounter;
       uint64_t timediff = bw.timestamp - old->timestamp;
-      double factor = 100.0 * 1.0e6 / (bw.maxBandwidth * timediff);
+      double factor = 1.0e6 / (bw.maxBandwidth * timediff);
       char vname[64];
 
-      snprintf(vname, sizeof(vname), "%s-membw-writes", prefix);
-      gpu_submit(gpu->name, "percent", vname, factor * writes);
+      snprintf(vname, sizeof(vname), "%s-writes", prefix);
+      gpu_submit(gpu->name, "memorybw_ratio", vname, factor * writes);
 
-      snprintf(vname, sizeof(vname), "%s-membw-reads", prefix);
-      gpu_submit(gpu->name, "percent", vname, factor * reads);
+      snprintf(vname, sizeof(vname), "%s-reads", prefix);
+      gpu_submit(gpu->name, "memorybw_ratio", vname, factor * reads);
     }
     *old = bw;
     ok = true;
@@ -1140,12 +1140,10 @@ static bool gpu_freqs_throttle(gpu_device_t *gpu) {
     }
     zes_freq_throttle_time_t *old = &gpu->throttle[i];
     if (old->timestamp) {
-      char vname[64];
       /* in micro seconds */
       double throttled = (throttle.throttleTime - old->throttleTime) /
                          (double)(throttle.timestamp - old->timestamp);
-      snprintf(vname, sizeof(vname), "%s-throttled", prefix);
-      gpu_submit(gpu->name, "percent", vname, 100.0 * throttled);
+      gpu_submit(gpu->name, "throttling_ratio", prefix, throttled);
     }
     *old = throttle;
     ok = true;
@@ -1273,16 +1271,16 @@ static bool gpu_powers(gpu_device_t *gpu) {
     }
     zes_power_energy_counter_t *old = &gpu->power[i];
     if (old->timestamp) {
-      char vname[64];
-      if (props.onSubdevice) {
-        snprintf(vname, sizeof(vname), "subdev%02d-watts", props.subdeviceId);
-      } else {
-        strcpy(vname, "device-watts");
-      }
       /* microJoules / microSeconds */
       double watts = (double)(counter.energy - old->energy) /
                      (counter.timestamp - old->timestamp);
-      gpu_submit(gpu->name, "power", vname, watts);
+      if (props.onSubdevice) {
+	char vname[64];
+        snprintf(vname, sizeof(vname), "subdev%02d", props.subdeviceId);
+	gpu_submit(gpu->name, "power_watts", vname, watts);
+      } else {
+	gpu_submit(gpu->name, "power_watts", "device", watts);
+      }
     }
     *old = counter;
     ok = true;
@@ -1414,7 +1412,7 @@ static bool gpu_engines(gpu_device_t *gpu) {
     if (old->timestamp) {
       double util = (double)(stats.activeTime - old->activeTime) /
                     (stats.timestamp - old->timestamp);
-      gpu_submit(gpu->name, "percent", vname, 100.0 * util);
+      gpu_submit(gpu->name, "engine_ratio", vname, util);
     }
     *old = stats;
     ok = true;

@@ -267,8 +267,7 @@ ze_result_t zesDeviceGetState(zes_device_handle_t dev,
 #define COUNTER_MAX TIME_INC
 
 /* what should get reported as result of above */
-#define COUNTER_VALUE ((double)COUNTER_INC / TIME_INC)
-#define COUNTER_PERCENTAGE (100.0 * COUNTER_VALUE)
+#define COUNTER_RATIO ((double)COUNTER_INC / TIME_INC)
 
 #define FREQ_INIT 300
 #define FREQ_INC 50
@@ -478,11 +477,11 @@ static metrics_validation_t valid_metrics[] = {
     {"temperature", true, false, TEMP_INIT, TEMP_INC, 0, 0.0},
 
     /* while counters increase, per-time incremented value should stay same */
-    {"engines-all/percent", true, false, COUNTER_PERCENTAGE, 0, 0, 0.0},
-    {"throttled/percent", true, false, COUNTER_PERCENTAGE, 0, 0, 0.0},
-    {"membw-reads/percent", true, false, 2 * COUNTER_PERCENTAGE, 0, 0, 0.0},
-    {"membw-writes/percent", true, false, COUNTER_PERCENTAGE, 0, 0, 0.0},
-    {"power", true, false, COUNTER_VALUE, 0, 0, 0.0},
+    {"engines-all/engine_ratio", true, false, COUNTER_RATIO, 0, 0, 0.0},
+    {"gpu/throttling_ratio", true, false, COUNTER_RATIO, 0, 0, 0.0},
+    {"reads/memorybw_ratio", true, false, 2 * COUNTER_RATIO, 0, 0, 0.0},
+    {"writes/memorybw_ratio", true, false, COUNTER_RATIO, 0, 0, 0.0},
+    {"power_watts", true, false, COUNTER_RATIO, 0, 0, 0.0},
 };
 
 /* VALIDATE: reset tracked metrics values and return count of how many
