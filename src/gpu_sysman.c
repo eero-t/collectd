@@ -839,10 +839,10 @@ static bool gpu_mems(gpu_device_t *gpu, unsigned int cache_idx) {
       const uint64_t mem_free = gpu->memory[0][i].free;
       /* Sysman reports just memory size & free amounts => calculate used */
       snprintf(vname, sizeof(vname), "%s-used", prefix);
-      gpu_submit(gpuname, "memory", vname, mem_size - mem_free);
+      gpu_submit(gpuname, "memory_bytes", vname, mem_size - mem_free);
 
       snprintf(vname, sizeof(vname), "%s-free", prefix);
-      gpu_submit(gpuname, "memory", vname, mem_free);
+      gpu_submit(gpuname, "memory_bytes", vname, mem_free);
     } else {
       /* find min & max values for memory free from
        * (the configured number of) samples
@@ -859,14 +859,14 @@ static bool gpu_mems(gpu_device_t *gpu, unsigned int cache_idx) {
         }
       }
       snprintf(vname, sizeof(vname), "%s-used-min", prefix);
-      gpu_submit(gpuname, "memory", vname, mem_size - free_max);
+      gpu_submit(gpuname, "memory_bytes", vname, mem_size - free_max);
       snprintf(vname, sizeof(vname), "%s-used-max", prefix);
-      gpu_submit(gpuname, "memory", vname, mem_size - free_min);
+      gpu_submit(gpuname, "memory_bytes", vname, mem_size - free_min);
 
       snprintf(vname, sizeof(vname), "%s-free-min", prefix);
-      gpu_submit(gpuname, "memory", vname, free_min);
+      gpu_submit(gpuname, "memory_bytes", vname, free_min);
       snprintf(vname, sizeof(vname), "%s-free-max", prefix);
-      gpu_submit(gpuname, "memory", vname, free_max);
+      gpu_submit(gpuname, "memory_bytes", vname, free_max);
     }
   }
   free(mems);
@@ -1031,13 +1031,13 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
       value = gpu->frequency[0][i].request;
       if (value >= 0) {
         snprintf(vname, sizeof(vname), "%s-request", prefix);
-        gpu_submit(gpuname, "frequency", vname, value);
+        gpu_submit(gpuname, "frequency_mhz", vname, value);
         freq_ok = true;
       }
       value = gpu->frequency[0][i].actual;
       if (value >= 0) {
         snprintf(vname, sizeof(vname), "%s-actual", prefix);
-        gpu_submit(gpuname, "frequency", vname, value);
+        gpu_submit(gpuname, "frequency_mhz", vname, value);
         freq_ok = true;
       }
     } else {
@@ -1064,16 +1064,16 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
       }
       if (req_max >= 0.0) {
         snprintf(vname, sizeof(vname), "%s-request-min", prefix);
-        gpu_submit(gpuname, "frequency", vname, req_min);
+        gpu_submit(gpuname, "frequency_mhz", vname, req_min);
         snprintf(vname, sizeof(vname), "%s-request-max", prefix);
-        gpu_submit(gpuname, "frequency", vname, req_max);
+        gpu_submit(gpuname, "frequency_mhz", vname, req_max);
         freq_ok = true;
       }
       if (act_max >= 0.0) {
         snprintf(vname, sizeof(vname), "%s-actual-min", prefix);
-        gpu_submit(gpuname, "frequency", vname, act_min);
+        gpu_submit(gpuname, "frequency_mhz", vname, act_min);
         snprintf(vname, sizeof(vname), "%s-actual-max", prefix);
-        gpu_submit(gpuname, "frequency", vname, act_max);
+        gpu_submit(gpuname, "frequency_mhz", vname, act_max);
         freq_ok = true;
       }
     }
@@ -1219,7 +1219,7 @@ static bool gpu_temps(gpu_device_t *gpu) {
       ok = false;
       break;
     }
-    gpu_submit(gpu->name, "temperature", vname, value);
+    gpu_submit(gpu->name, "temperature_celsius", vname, value);
     ok = true;
   }
   free(temps);

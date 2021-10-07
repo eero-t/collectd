@@ -107,6 +107,7 @@ fork_rate               value:DERIVE:0:U
 freepages               value:GAUGE:0:U
 frequency               value:GAUGE:0:U
 frequency_error         value:GAUGE:-1000000:1000000
+frequency_mhz           value:GAUGE:0:U
 frequency_offset        value:GAUGE:-1000000:1000000
 fscache_stat            value:DERIVE:0:U
 gauge                   value:GAUGE:U:U
@@ -168,6 +169,7 @@ memcached_ops           value:DERIVE:0:U
 memory                  value:GAUGE:0:281474976710656
 memory_lua              value:GAUGE:0:281474976710656
 memory_throttle_count   value:DERIVE:0:U
+memory_bytes            value:GAUGE:0:U
 memorybw_ratio          value:GAUGE:0:1.1
 multimeter              value:GAUGE:U:U
 mutex_operations        value:DERIVE:0:U
@@ -318,6 +320,7 @@ sysevent                value:GAUGE:0:1
 tcp_connections         value:GAUGE:0:4294967295
 tdp                     value:GAUGE:U:U
 temperature             value:GAUGE:U:U
+temperature_celsius     value:GAUGE:U:U
 threads                 value:GAUGE:0:U
 time_dispersion         value:GAUGE:-1000000:1000000
 time_offset             value:GAUGE:-1000000:1000000
