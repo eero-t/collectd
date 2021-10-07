@@ -55,8 +55,6 @@
 #include "utils/common/common.h"
 
 #define PLUGIN_NAME "gpu_sysman"
-#define MAX_GPU_NAME 32 /* PREFIX + PCI-BNF */
-#define NAME_PREFIX "GPU-"
 
 /* collectd plugin API callback finished OK */
 #define RET_OK 0
@@ -297,24 +295,25 @@ static void log_uuid(const char *prefix, const uint8_t *byte, int len) {
 }
 
 /* Log Sysman API provided info for given GPU if logging is enabled
- * and return name for it: "GPU-<idx> <PCI BDF>"
+ * and on success, return GPU PCI ID as string in BDF notation:
+ *   https://wiki.xen.org/wiki/Bus:Device.Function_(BDF)_Notation
  */
 static char *gpu_info(int idx, zes_device_handle_t dev) {
-  char *name = malloc(MAX_GPU_NAME);
-  assert(name);
+  char *name, buf[32];
 
   zes_pci_properties_t pci;
   ze_result_t ret = zesDevicePciGetProperties(dev, &pci);
   if (ret == ZE_RESULT_SUCCESS) {
     const zes_pci_address_t *addr = &pci.address;
-    snprintf(name, MAX_GPU_NAME, NAME_PREFIX "%04x:%02x:%02x.%x", addr->domain,
+    snprintf(buf, sizeof(buf), "%04x:%02x:%02x.%x", addr->domain,
              addr->bus, addr->device, addr->function);
   } else {
     ERROR(PLUGIN_NAME ": failed to get GPU %d PCI device properties => 0x%x",
           idx, ret);
-    free(name);
     return NULL;
   }
+  name = strdup(buf);
+  assert(name);
   if (!config.gpuinfo) {
     return name;
   }
@@ -324,8 +323,7 @@ static char *gpu_info(int idx, zes_device_handle_t dev) {
 
   INFO("PCI info:");
   if (ret == ZE_RESULT_SUCCESS) {
-    /* https://wiki.xen.org/wiki/Bus:Device.Function_(BDF)_Notation */
-    INFO("- PCI B/D/F:  %s", name + sizeof(NAME_PREFIX));
+    INFO("- PCI B/D/F:  %s", name);
     const zes_pci_speed_t *speed = &pci.maxSpeed;
     INFO("- PCI gen:    %d", speed->gen);
     INFO("- PCI width:  %d", speed->width);
