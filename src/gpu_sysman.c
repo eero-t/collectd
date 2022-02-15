@@ -83,6 +83,7 @@ typedef struct {
   bool membw;
   bool power;
   bool power_ratio; // needs extra Sysman data compared to power
+  bool psu;
   bool ras;
   bool ras_separate;
   bool temp;
@@ -96,6 +97,7 @@ typedef struct {
   char *pci_dev;  // if GpuInfo
   char *dev_file; // if ADD_DEV_FILE
   /* number of types for metrics without allocs */
+  uint32_t psu_count;
   uint32_t ras_count;
   uint32_t temp_count;
   /* number of types for each counter metric */
@@ -151,6 +153,7 @@ static struct {
 #define KEY_DISABLE_MEM "DisableMemory"
 #define KEY_DISABLE_MEMBW "DisableMemoryBandwidth"
 #define KEY_DISABLE_POWER "DisablePower"
+#define KEY_DISABLE_PSU "DisablePSU"
 #define KEY_DISABLE_RAS "DisableErrors"
 #define KEY_DISABLE_RAS_SEPARATE "DisableSeparateErrors"
 #define KEY_DISABLE_TEMP "DisableTemperature"
@@ -226,6 +229,7 @@ static int gpu_config_free(void) {
     FREE_GPU_SAMPLING_ARRAYS(i, frequency);
     FREE_GPU_SAMPLING_ARRAYS(i, memory);
     /* zero rest of counters & free name */
+    gpus[i].psu_count = 0;
     gpus[i].ras_count = 0;
     gpus[i].temp_count = 0;
     free(gpus[i].pci_bdf);
@@ -277,6 +281,7 @@ static int gpu_config_check(void) {
                  {KEY_DISABLE_MEM, config.disabled.mem},
                  {KEY_DISABLE_MEMBW, config.disabled.membw},
                  {KEY_DISABLE_POWER, config.disabled.power},
+                 {KEY_DISABLE_PSU, config.disabled.psu},
                  {KEY_DISABLE_RAS, config.disabled.ras},
                  {KEY_DISABLE_RAS_SEPARATE, config.disabled.ras_separate},
                  {KEY_DISABLE_TEMP, config.disabled.temp},
@@ -1668,6 +1673,133 @@ static bool gpu_temps(gpu_device_t *gpu) {
   return ok;
 }
 
+/* Report metrics for relevant power supplies, return true for success */
+static bool gpu_psus(gpu_device_t *gpu) {
+  uint32_t i, psu_count = 0;
+  zes_device_handle_t dev = gpu->handle;
+  ze_result_t ret = zesDeviceEnumPsus(dev, &psu_count, NULL);
+  if (ret != ZE_RESULT_SUCCESS) {
+    ERROR(PLUGIN_NAME ": failed to get power supply count => 0x%x", ret);
+    return false;
+  }
+  zes_psu_handle_t *psus;
+  psus = scalloc(psu_count, sizeof(*psus));
+  if (ret = zesDeviceEnumPsus(dev, &psu_count, psus),
+      ret != ZE_RESULT_SUCCESS) {
+    ERROR(PLUGIN_NAME ": failed to get %d power supplies => 0x%x", psu_count,
+          ret);
+    free(psus);
+    return false;
+  }
+  if (gpu->psu_count != psu_count) {
+    INFO(PLUGIN_NAME ": Sysman reports %d power supplies", psu_count);
+    gpu->psu_count = psu_count;
+  }
+
+  metric_family_t fam_temp = {
+      .help = "Power supply heatsink temperature (in Celsius) when queried",
+      .name = METRIC_PREFIX "psu_temperature_celsius",
+      .type = METRIC_TYPE_GAUGE,
+  };
+  metric_family_t fam_current = {
+      .help = "Current drawn from power supply (in amperes) when queried",
+      .name = METRIC_PREFIX "psu_current_amperes",
+      .type = METRIC_TYPE_GAUGE,
+  };
+  metric_family_t fam_ratio = {
+      .help = "Power supply current usage ratio (0-1) vs limit",
+      .name = METRIC_PREFIX "psu_current_ratio",
+      .type = METRIC_TYPE_GAUGE,
+  };
+  metric_t metric = {0};
+
+  bool reported_temp = false, reported_current = false, reported_ratio = false,
+       ok = false;
+  for (i = 0; i < psu_count; i++) {
+    zes_psu_properties_t props;
+    if (ret = zesPsuGetProperties(psus[i], &props), ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get power supply %d properties => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+    zes_psu_state_t state;
+    if (ret = zesPsuGetState(psus[i], &state), ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get power supply %d state => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+    const char *fan;
+    if (props.haveFan) {
+      if (state.fanFailed) {
+        fan = "failed";
+      } else {
+        fan = "ok";
+      }
+    } else {
+      fan = "no";
+    }
+    metric_label_set(&metric, "fan", fan);
+
+    const char *voltage;
+    switch (state.voltStatus) {
+    case ZES_PSU_VOLTAGE_STATUS_NORMAL:
+      voltage = "ok";
+      break;
+    case ZES_PSU_VOLTAGE_STATUS_OVER:
+      voltage = "over-voltage";
+      break;
+    case ZES_PSU_VOLTAGE_STATUS_UNDER:
+      voltage = "under-voltage";
+      break;
+    case ZES_PSU_VOLTAGE_STATUS_UNKNOWN:
+    default:
+      voltage = "unknown";
+    }
+    metric_label_set(&metric, "voltage", voltage);
+
+    metric_set_subdev(&metric, props.onSubdevice, props.subdeviceId);
+    if (state.temperature != -1) {
+      metric.value.gauge = state.temperature;
+      metric_family_metric_append(&fam_temp, metric);
+      reported_temp = true;
+    }
+    if (state.current != -1) {
+      metric.value.gauge = state.current / 1000.0; /* m-amps as amps */
+      metric_family_metric_append(&fam_current, metric);
+      reported_current = true;
+
+      if (props.ampLimit > 0 && (config.output & OUTPUT_RATIO)) {
+        metric.value.gauge = (double)state.current / props.ampLimit;
+        metric_family_metric_append(&fam_ratio, metric);
+        reported_ratio = true;
+      }
+    }
+    ok = true;
+  }
+  if (ok) {
+    metric_reset(&metric);
+    if (reported_temp) {
+      gpu_submit(gpu, &fam_temp);
+    }
+    if (reported_current) {
+      gpu_submit(gpu, &fam_current);
+      if (reported_ratio) {
+        gpu_submit(gpu, &fam_ratio);
+      }
+    }
+    if (!(reported_temp || reported_current)) {
+      ERROR(PLUGIN_NAME
+            ": neither temperature nor current reported for any of the %d PSUs",
+            psu_count);
+      ok = false;
+    }
+  }
+  free(psus);
+  return ok;
+}
+
 /* Report power usage for relevant domains, return true for success */
 static bool gpu_powers(gpu_device_t *gpu) {
   uint32_t i, power_count = 0;
@@ -2053,6 +2185,10 @@ static int gpu_read(void) {
               i);
       disabled->power = true;
     }
+    if (!disabled->psu && !gpu_psus(gpu)) {
+      WARNING(PLUGIN_NAME ": GPU-%d PSU query fail / no PSUs => disabled", i);
+      disabled->psu = true;
+    }
     if (!disabled->ras && !gpu_ras(gpu)) {
       WARNING(PLUGIN_NAME ": GPU-%d errors query fail / no sets => disabled",
               i);
@@ -2071,8 +2207,8 @@ static int gpu_read(void) {
       gpu->disabled.throttle = true;
     }
     if (disabled->engine && disabled->mem && disabled->freq &&
-        disabled->membw && disabled->power && disabled->ras && disabled->temp &&
-        disabled->throttle) {
+        disabled->membw && disabled->power && disabled->psu && disabled->ras &&
+        disabled->temp && disabled->throttle) {
       /* all metrics missing -> disable use of that GPU */
       ERROR(PLUGIN_NAME ": No metrics from GPU-%d, disabling its querying", i);
       disabled->all = true;
@@ -2097,6 +2233,8 @@ static int gpu_config_parse(const char *key, const char *value) {
     config.disabled.membw = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_POWER) == 0) {
     config.disabled.power = IS_TRUE(value);
+  } else if (strcasecmp(key, KEY_DISABLE_PSU) == 0) {
+    config.disabled.psu = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_RAS) == 0) {
     config.disabled.ras = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_RAS_SEPARATE) == 0) {
@@ -2158,11 +2296,13 @@ static int gpu_config_parse(const char *key, const char *value) {
 void module_register(void) {
   /* NOTE: key strings *must* be static */
   static const char *config_keys[] = {
-      KEY_DISABLE_ENGINE,   KEY_DISABLE_ENGINE_SINGLE, KEY_DISABLE_FREQ,
-      KEY_DISABLE_MEM,      KEY_DISABLE_MEMBW,         KEY_DISABLE_POWER,
-      KEY_DISABLE_RAS,      KEY_DISABLE_RAS_SEPARATE,  KEY_DISABLE_TEMP,
-      KEY_DISABLE_THROTTLE, KEY_METRICS_OUTPUT,        KEY_LOG_GPU_INFO,
-      KEY_SAMPLES};
+      KEY_DISABLE_ENGINE,       KEY_DISABLE_ENGINE_SINGLE,
+      KEY_DISABLE_FREQ,         KEY_DISABLE_MEM,
+      KEY_DISABLE_MEMBW,        KEY_DISABLE_POWER,
+      KEY_DISABLE_PSU,          KEY_DISABLE_RAS,
+      KEY_DISABLE_RAS_SEPARATE, KEY_DISABLE_TEMP,
+      KEY_DISABLE_THROTTLE,     KEY_METRICS_OUTPUT,
+      KEY_LOG_GPU_INFO,         KEY_SAMPLES};
   const int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
   plugin_register_config(PLUGIN_NAME, gpu_config_parse, config_keys,

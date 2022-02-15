@@ -311,6 +311,10 @@ static ze_result_t metric_args_check(int callbit, const char *name,
 #define TEMP_INIT 10
 #define TEMP_INC 5
 
+#define PSU_LIMIT (40 * 1000)
+#define PSU_INIT (PSU_LIMIT / 4)
+#define PSU_INC (PSU_LIMIT / 200)
+
 /* Arguments:
  * - call bit
  * - metric enumaration function name
@@ -488,7 +492,19 @@ ze_result_t zesPowerGetLimits(zes_pwr_handle_t handle,
   return metric_args_check(20, "zesPowerGetLimits", handle, check);
 }
 
-#define QUERY_CALL_FUNCS 21
+/* valid ampLimit is needed for current ratio */
+static zes_psu_properties_t psu_props = {.ampLimit = PSU_LIMIT * 1000,
+                                         .haveFan = true};
+/* multiplied to provide values in milli-amps */
+static zes_psu_state_t psu_stats = {.current = PSU_INIT * 1000,
+                                    .temperature = TEMP_INIT};
+
+ADD_METRIC(21, zesDeviceEnumPsus, zes_psu_handle_t, zesPsuGetProperties,
+           zes_psu_properties_t, psu_props, zesPsuGetState, zes_psu_state_t,
+           psu_stats, psu_stats.current += PSU_INC * 1000,
+           psu_stats.temperature += TEMP_INC)
+
+#define QUERY_CALL_FUNCS 24
 #define QUERY_CALL_BITS (((uint64_t)1 << QUERY_CALL_FUNCS) - 1)
 
 /* ------------------------------------------------------------------------- */
@@ -521,6 +537,9 @@ typedef struct {
 
 #define MEM_RATIO_INIT ((double)MEMORY_INIT / MEMORY_SIZE)
 #define MEM_RATIO_INC ((double)MEMORY_INC / MEMORY_SIZE)
+
+#define PSU_RATIO_INIT ((double)(PSU_INIT) / (PSU_LIMIT))
+#define PSU_RATIO_INC ((double)(PSU_INC) / (PSU_LIMIT))
 
 static metrics_validation_t valid_metrics[] = {
     /* gauge value changes */
@@ -558,6 +577,9 @@ static metrics_validation_t valid_metrics[] = {
      MEM_RATIO_INC, 0, 0.0},
     {"memory_usage_ratio/HBM/system", false, false, MEM_RATIO_INIT,
      MEM_RATIO_INC, 0, 0.0},
+    {"psu_current_amperes", true, false, PSU_INIT, PSU_INC, 0, 0.0},
+    {"psu_current_ratio", true, false, PSU_RATIO_INIT, PSU_RATIO_INC, 0, 0.0},
+    {"psu_temperature_celsius", true, false, TEMP_INIT, TEMP_INC, 0, 0.0},
     {"temperature_celsius", true, false, TEMP_INIT, TEMP_INC, 0, 0.0},
     {"temperature_ratio", true, false, TEMP_RATIO_INIT, TEMP_RATIO_INC, 0, 0.0},
 
@@ -1082,8 +1104,8 @@ static int get_reset_disabled(gpu_disable_t *disabled, bool value, int *mask,
       {"engine", &disabled->engine},    {"frequency", &disabled->freq},
       {"memory", &disabled->mem},       {"membw", &disabled->membw},
       {"power", &disabled->power},      {"power_ratio", &disabled->power_ratio},
-      {"errors", &disabled->ras},       {"temperature", &disabled->temp},
-      {"throttle", &disabled->throttle}};
+      {"psu", &disabled->psu},          {"errors", &disabled->ras},
+      {"temperature", &disabled->temp}, {"throttle", &disabled->throttle}};
   *all = 0;
   int count = 0;
   for (int i = 0; i < (int)STATIC_ARRAY_SIZE(flags); i++) {

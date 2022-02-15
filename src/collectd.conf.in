@@ -803,6 +803,7 @@
 #   DisableThrottleTime false
 #   DisableTemperature false
 #   DisablePower false
+#   DisablePSU false
 #   DisableEngine false
 #   DisableEngineSingle false
 #   DisableErrors false
