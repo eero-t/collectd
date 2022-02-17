@@ -78,6 +78,7 @@ typedef struct {
   bool all; /* no metrics from whole GPU */
   bool engine;
   bool engine_single;
+  bool fabric;
   bool fan;
   bool freq;
   bool mem;
@@ -98,6 +99,7 @@ typedef struct {
   char *pci_dev;  // if GpuInfo
   char *dev_file; // if ADD_DEV_FILE
   /* number of types for metrics without allocs */
+  uint32_t fabric_count;
   uint32_t fan_count;
   uint32_t psu_count;
   uint32_t ras_count;
@@ -151,6 +153,7 @@ static struct {
 /* Sysman GPU plugin config options (defines to ease catching typos) */
 #define KEY_DISABLE_ENGINE "DisableEngine"
 #define KEY_DISABLE_ENGINE_SINGLE "DisableEngineSingle"
+#define KEY_DISABLE_FABRIC "DisableFabric"
 #define KEY_DISABLE_FAN "DisableFan"
 #define KEY_DISABLE_FREQ "DisableFrequency"
 #define KEY_DISABLE_MEM "DisableMemory"
@@ -232,6 +235,7 @@ static int gpu_config_free(void) {
     FREE_GPU_SAMPLING_ARRAYS(i, frequency);
     FREE_GPU_SAMPLING_ARRAYS(i, memory);
     /* zero rest of counters & free name */
+    gpus[i].fabric_count = 0;
     gpus[i].fan_count = 0;
     gpus[i].psu_count = 0;
     gpus[i].ras_count = 0;
@@ -281,6 +285,7 @@ static int gpu_config_check(void) {
     bool value;
   } options[] = {{KEY_DISABLE_ENGINE, config.disabled.engine},
                  {KEY_DISABLE_ENGINE_SINGLE, config.disabled.engine_single},
+                 {KEY_DISABLE_FABRIC, config.disabled.fabric},
                  {KEY_DISABLE_FAN, config.disabled.fan},
                  {KEY_DISABLE_FREQ, config.disabled.freq},
                  {KEY_DISABLE_MEM, config.disabled.mem},
@@ -1678,6 +1683,182 @@ static bool gpu_temps(gpu_device_t *gpu) {
   return ok;
 }
 
+/* Report metrics for relevant fabric ports, return true for success */
+static bool gpu_fabrics(gpu_device_t *gpu) {
+  uint32_t i, port_count = 0;
+  zes_device_handle_t dev = gpu->handle;
+  ze_result_t ret = zesDeviceEnumFabricPorts(dev, &port_count, NULL);
+  if (ret != ZE_RESULT_SUCCESS) {
+    ERROR(PLUGIN_NAME ": failed to get fabric port count => 0x%x", ret);
+    return false;
+  }
+  zes_fabric_port_handle_t *ports;
+  ports = scalloc(port_count, sizeof(*ports));
+  if (ret = zesDeviceEnumFabricPorts(dev, &port_count, ports),
+      ret != ZE_RESULT_SUCCESS) {
+    ERROR(PLUGIN_NAME ": failed to get %d fabric ports => 0x%x", port_count,
+          ret);
+    free(ports);
+    return false;
+  }
+  if (gpu->fabric_count != port_count) {
+    INFO(PLUGIN_NAME ": Sysman reports %d fabric ports", port_count);
+    gpu->fabric_count = port_count;
+  }
+
+  /* TODO: add ratio metric i.e. old value alloc & storing, max throughput
+   * calculation, and COUNTER + RATIO checks (same as with memory bandwidth) */
+  metric_family_t fam_counter = {
+      .help = "Fabric port throughput (in bytes)",
+      .name = METRIC_PREFIX "fabric_port_bytes_total",
+      .type = METRIC_TYPE_COUNTER,
+  };
+  metric_t metric = {0};
+
+  bool ok = false;
+  for (i = 0; i < port_count; i++) {
+
+    /* fetch all information before allocing labels */
+
+    zes_fabric_port_state_t state;
+    if (ret = zesFabricPortGetState(ports[i], &state),
+        ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get fabric port %d state => 0x%x", i, ret);
+      ok = false;
+      break;
+    }
+    zes_fabric_port_properties_t props;
+    if (ret = zesFabricPortGetProperties(ports[i], &props),
+        ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get fabric port %d properties => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+    zes_fabric_port_config_t conf;
+    if (ret = zesFabricPortGetConfig(ports[i], &conf),
+        ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get fabric port %d config => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+    zes_fabric_port_throughput_t perf;
+    if (ret = zesFabricPortGetThroughput(ports[i], &perf),
+        ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get fabric port %d throughput => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+    zes_fabric_link_type_t link;
+    if (ret = zesFabricPortGetLinkType(ports[i], &link),
+        ret != ZE_RESULT_SUCCESS) {
+      ERROR(PLUGIN_NAME ": failed to get fabric port %d link type => 0x%x", i,
+            ret);
+      ok = false;
+      break;
+    }
+
+    /* port setting / identity setting labels */
+
+    link.desc[sizeof(link.desc) - 1] = '\0';
+    metric_label_set(&metric, "link", link.desc);
+    metric_label_set(&metric, "enabled", conf.enabled ? "on" : "off");
+    metric_label_set(&metric, "beaconing", conf.beaconing ? "on" : "off");
+
+    props.model[sizeof(props.model) - 1] = '\0';
+    metric_label_set(&metric, "model", props.model);
+    metric_set_subdev(&metric, props.onSubdevice, props.subdeviceId);
+
+    /* topology labels */
+
+    char buf[32];
+    zes_fabric_port_id_t *pid = &props.portId;
+    snprintf(buf, sizeof(buf), "%08x.%08x.%02x", pid->fabricId, pid->attachId,
+             pid->portNumber);
+    metric_label_set(&metric, "port", buf);
+
+    pid = &state.remotePortId;
+    snprintf(buf, sizeof(buf), "%08x.%08x.%02x", pid->fabricId, pid->attachId,
+             pid->portNumber);
+    metric_label_set(&metric, "remote", buf);
+
+    /* status / health labels */
+
+    const char *status;
+    switch (state.status) {
+    case ZES_FABRIC_PORT_STATUS_UNKNOWN:
+      status = "unknown";
+      break;
+    case ZES_FABRIC_PORT_STATUS_HEALTHY:
+      status = "healthy";
+      break;
+    case ZES_FABRIC_PORT_STATUS_DEGRADED:
+      status = "degraded";
+      break;
+    case ZES_FABRIC_PORT_STATUS_FAILED:
+      status = "failed";
+      break;
+    case ZES_FABRIC_PORT_STATUS_DISABLED:
+      status = "disabled";
+      break;
+    default:
+      status = "unsupported";
+    }
+    metric_label_set(&metric, "status", status);
+
+    const char *issues = NULL;
+    switch (state.qualityIssues) {
+    case 0:
+      break;
+    case ZES_FABRIC_PORT_QUAL_ISSUE_FLAG_LINK_ERRORS:
+      issues = "link";
+      break;
+    case ZES_FABRIC_PORT_QUAL_ISSUE_FLAG_SPEED:
+      issues = "speed";
+      break;
+    default:
+      issues = "link+speed";
+    }
+    switch (state.failureReasons) {
+    case 0:
+      break;
+    case ZES_FABRIC_PORT_FAILURE_FLAG_FAILED:
+      issues = "failure";
+      break;
+    case ZES_FABRIC_PORT_FAILURE_FLAG_TRAINING_TIMEOUT:
+      issues = "training";
+      break;
+    case ZES_FABRIC_PORT_FAILURE_FLAG_FLAPPING:
+      issues = "flapping";
+      break;
+    default:
+      issues = "multiple";
+    }
+    if (issues) {
+      metric_label_set(&metric, "issues", issues);
+    }
+
+    /* add counters with direction labels */
+
+    metric.value.counter = perf.txCounter;
+    metric_label_set(&metric, "direction", "write");
+    metric_family_metric_append(&fam_counter, metric);
+
+    metric.value.counter = perf.rxCounter;
+    metric_label_set(&metric, "direction", "read");
+    metric_family_metric_append(&fam_counter, metric);
+    ok = true;
+  }
+  if (ok) {
+    metric_reset(&metric);
+    gpu_submit(gpu, &fam_counter);
+  }
+  free(ports);
+  return ok;
+}
+
 /* Report metrics for relevant fans, return true for success */
 static bool gpu_fans(gpu_device_t *gpu) {
   uint32_t i, fan_count = 0;
@@ -2294,6 +2475,12 @@ static int gpu_read(void) {
               i);
       disabled->engine = true;
     }
+    if (!disabled->fabric && !gpu_fabrics(gpu)) {
+      WARNING(PLUGIN_NAME
+              ": GPU-%d fabric query fail / no fabric ports => disabled",
+              i);
+      disabled->fabric = true;
+    }
     if (!disabled->fan && !gpu_fans(gpu)) {
       WARNING(PLUGIN_NAME ": GPU-%d fan query fail / no fans => disabled", i);
       disabled->fan = true;
@@ -2329,9 +2516,10 @@ static int gpu_read(void) {
               i);
       gpu->disabled.throttle = true;
     }
-    if (disabled->engine && disabled->mem && disabled->fan && disabled->freq &&
-        disabled->membw && disabled->power && disabled->psu && disabled->ras &&
-        disabled->temp && disabled->throttle) {
+    if (disabled->engine && disabled->fabric && disabled->fan &&
+        disabled->freq && disabled->mem && disabled->membw && disabled->power &&
+        disabled->psu && disabled->ras && disabled->temp &&
+        disabled->throttle) {
       /* all metrics missing -> disable use of that GPU */
       ERROR(PLUGIN_NAME ": No metrics from GPU-%d, disabling its querying", i);
       disabled->all = true;
@@ -2348,6 +2536,8 @@ static int gpu_config_parse(const char *key, const char *value) {
     config.disabled.engine = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_ENGINE_SINGLE) == 0) {
     config.disabled.engine_single = IS_TRUE(value);
+  } else if (strcasecmp(key, KEY_DISABLE_FABRIC) == 0) {
+    config.disabled.fabric = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_FAN) == 0) {
     config.disabled.fan = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_FREQ) == 0) {
@@ -2421,11 +2611,12 @@ static int gpu_config_parse(const char *key, const char *value) {
 void module_register(void) {
   /* NOTE: key strings *must* be static */
   static const char *config_keys[] = {
-      KEY_DISABLE_ENGINE,       KEY_DISABLE_ENGINE_SINGLE, KEY_DISABLE_FAN,
-      KEY_DISABLE_FREQ,         KEY_DISABLE_MEM,           KEY_DISABLE_MEMBW,
-      KEY_DISABLE_POWER,        KEY_DISABLE_PSU,           KEY_DISABLE_RAS,
-      KEY_DISABLE_RAS_SEPARATE, KEY_DISABLE_TEMP,          KEY_DISABLE_THROTTLE,
-      KEY_METRICS_OUTPUT,       KEY_LOG_GPU_INFO,          KEY_SAMPLES};
+      KEY_DISABLE_ENGINE,   KEY_DISABLE_ENGINE_SINGLE, KEY_DISABLE_FABRIC,
+      KEY_DISABLE_FAN,      KEY_DISABLE_FREQ,          KEY_DISABLE_MEM,
+      KEY_DISABLE_MEMBW,    KEY_DISABLE_POWER,         KEY_DISABLE_PSU,
+      KEY_DISABLE_RAS,      KEY_DISABLE_RAS_SEPARATE,  KEY_DISABLE_TEMP,
+      KEY_DISABLE_THROTTLE, KEY_METRICS_OUTPUT,        KEY_LOG_GPU_INFO,
+      KEY_SAMPLES};
   const int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
   plugin_register_config(PLUGIN_NAME, gpu_config_parse, config_keys,
