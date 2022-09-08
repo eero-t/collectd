@@ -36,6 +36,11 @@
  *   no GPU devices (with PCI ID) are available
  * - Sysman errors in metric queries cause just given metric to be
  *    disabled for given GPU
+ *
+ * TODO: Reset metric_t while enumerating through metrics of given type?
+ * In some cases not doing reset could result in extra (incorrect) metric
+ * label being reported, *if* fetching some property fails *only* for a
+ * subset of metrics of given metric type.
  */
 #include <assert.h>
 #include <stdio.h>
