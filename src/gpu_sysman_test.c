@@ -259,7 +259,17 @@ DEV_GET_ZEROED_STRUCT(5, zesDeviceGetProperties, zes_device_properties_t)
 DEV_GET_ZEROED_STRUCT(6, zesDevicePciGetProperties, zes_pci_properties_t)
 DEV_GET_ZEROED_STRUCT(7, zesDeviceGetState, zes_device_state_t)
 
-#define INIT_CALL_FUNCS 8
+ze_result_t zesDeviceGetEccState(zes_device_handle_t handle,
+                                 zes_device_ecc_properties_t *state) {
+  ze_result_t ret = dev_args_check(8, "zesDeviceGetEccState", handle, state);
+  if (ret == ZE_RESULT_SUCCESS) {
+    memset(state, 0, sizeof(*state));
+    state->currentState = ZES_DEVICE_ECC_STATE_ENABLED;
+  }
+  return ret;
+}
+
+#define INIT_CALL_FUNCS 9
 #define INIT_CALL_BITS (((uint64_t)1 << INIT_CALL_FUNCS) - 1)
 
 /* ------------------------------------------------------------------------- */
