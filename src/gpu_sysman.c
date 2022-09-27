@@ -133,10 +133,10 @@ typedef struct {
 } gpu_device_t;
 
 typedef enum {
-  OUTPUT_COUNTER = 1,
-  OUTPUT_RATE = 2,
-  OUTPUT_RATIO = 4,
-  OUTPUT_ALL = 7
+  OUTPUT_COUNTER = (1 << 0),
+  OUTPUT_RATE = (1 << 1),
+  OUTPUT_RATIO = (1 << 2),
+  OUTPUT_ALL = (OUTPUT_COUNTER | OUTPUT_RATE | OUTPUT_RATIO)
 } output_t;
 
 static const struct {
@@ -1304,8 +1304,8 @@ static bool gpu_mems_bw(gpu_device_t *gpu) {
   return ok;
 }
 
-/* set frequency metric labels based on its properties, return ZE_RESULT_SUCCESS
- * for success
+/* set frequency metric labels based on its properties and maxfreq for non-NULL
+ * pointer, return ZE_RESULT_SUCCESS for success
  */
 static ze_result_t set_freq_labels(zes_freq_handle_t freq, metric_t *metric,
                                    double *maxfreq) {
@@ -1314,7 +1314,9 @@ static ze_result_t set_freq_labels(zes_freq_handle_t freq, metric_t *metric,
   if (ret != ZE_RESULT_SUCCESS) {
     return ret;
   }
-  *maxfreq = props.max;
+  if (maxfreq) {
+    *maxfreq = props.max;
+  }
   const char *type;
   switch (props.type) {
   case ZES_FREQ_DOMAIN_GPU:
@@ -1612,8 +1614,7 @@ static bool gpu_freqs_throttle(gpu_device_t *gpu) {
       ok = false;
       break;
     }
-    double dummy;
-    if (ret = set_freq_labels(freqs[i], &metric, &dummy),
+    if (ret = set_freq_labels(freqs[i], &metric, NULL),
         ret != ZE_RESULT_SUCCESS) {
       ERROR(PLUGIN_NAME
             ": failed to get frequency domain %d properties => 0x%x",
@@ -2642,15 +2643,17 @@ static int gpu_config_parse(const char *key, const char *value) {
     char *save, *flag, *flags = sstrdup(value);
     for (flag = strtok_r(flags, delim, &save); flag;
          flag = strtok_r(NULL, delim, &save)) {
-      unsigned i;
-      for (i = 0; i < STATIC_ARRAY_SIZE(metrics_output); i++) {
+      bool found = false;
+      for (unsigned i = 0; i < STATIC_ARRAY_SIZE(metrics_output); i++) {
         if (strcasecmp(flag, metrics_output[i].name) == 0) {
           config.output |= metrics_output[i].value;
+          found = true;
           break;
         }
       }
-      if (i >= STATIC_ARRAY_SIZE(metrics_output)) {
+      if (!found) {
         free(flags);
+        ERROR(PLUGIN_NAME ": Invalid '%s' config key value '%s'", key, value);
         return RET_INVALID_CONFIG;
       }
     }
