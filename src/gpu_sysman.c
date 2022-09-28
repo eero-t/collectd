@@ -1032,7 +1032,7 @@ static ze_result_t set_mem_labels(zes_mem_handle_t mem, metric_t *metric) {
   metric_label_set(metric, "type", type);
   metric_label_set(metric, "location", location);
   metric_set_subdev(metric, props.onSubdevice, props.subdeviceId);
-  return ret;
+  return ZE_RESULT_SUCCESS;
 }
 
 /* Report memory usage for memory modules, return true for success.
@@ -1152,7 +1152,7 @@ static bool gpu_mems(gpu_device_t *gpu, unsigned int cache_idx) {
           free_max = mem_free;
         }
       }
-      /* largest used amount of memory */
+      /* smallest used amount of memory within interval */
       mem_used = mem_size - free_max;
       metric.value.gauge = mem_used;
       metric_label_set(&metric, "function", "min");
@@ -1161,7 +1161,7 @@ static bool gpu_mems(gpu_device_t *gpu, unsigned int cache_idx) {
         metric.value.gauge = mem_used / mem_size;
         metric_family_metric_append(&fam_ratio, metric);
       }
-      /* smallest used amount of memory */
+      /* largest used amount of memory within interval */
       mem_used = mem_size - free_min;
       metric.value.gauge = mem_used;
       metric_label_set(&metric, "function", "max");
@@ -1330,7 +1330,7 @@ static ze_result_t set_freq_labels(zes_freq_handle_t freq, metric_t *metric,
   }
   metric_label_set(metric, "location", type);
   metric_set_subdev(metric, props.onSubdevice, props.subdeviceId);
-  return ret;
+  return ZE_RESULT_SUCCESS;
 }
 
 /* set label explaining frequency throttling reason(s) */
