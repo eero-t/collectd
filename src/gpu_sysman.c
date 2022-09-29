@@ -425,7 +425,7 @@ static bool gpu_info(zes_device_handle_t dev, char **pci_bdf, char **pci_dev) {
 
   zes_device_ecc_properties_t ecc;
   const char *eccstate = "unavailable";
-  if (ret = zesDeviceGetEccState(dev, &ecc), ret == ZE_RESULT_SUCCESS) {
+  if (zesDeviceGetEccState(dev, &ecc) == ZE_RESULT_SUCCESS) {
     switch (ecc.currentState) {
     case ZES_DEVICE_ECC_STATE_ENABLED:
       eccstate = "enabled";
@@ -1352,7 +1352,7 @@ static void set_freq_throttled_label(metric_t *metric,
   const char *reason = "";
   for (unsigned int i = 0; i < STATIC_ARRAY_SIZE(flags); i++) {
     if (reasons & flags[i].flag) {
-      if (reason[0]) {
+      if (found) {
         reason = "many";
         break;
       }
