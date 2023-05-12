@@ -1371,6 +1371,9 @@ static ze_result_t set_freq_labels(zes_freq_handle_t freq, metric_t *metric,
   case ZES_FREQ_DOMAIN_MEMORY:
     type = "memory";
     break;
+  case ZES_FREQ_DOMAIN_MEDIA:
+    type = "media";
+    break;
   default:
     type = "unknown";
   }
