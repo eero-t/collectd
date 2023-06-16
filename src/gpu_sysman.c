@@ -91,8 +91,22 @@ typedef struct {
   bool throttle;
 } gpu_disable_t;
 
-/* handles for the GPU devices discovered by Sysman library */
+/* memory bandwidth query duration in milliseconds */
+#define BW_QUERY_MS 50
+
+/* extended driver functions:
+ * - ext_get_membw_t: mem handle, read BW, write BW, duration (ms)
+ */
+typedef ze_result_t (*ext_get_membw_t)(zes_mem_handle_t, uint64_t *, uint64_t *,
+                                       uint64_t *, uint64_t);
 typedef struct {
+  ext_get_membw_t membw;
+} ext_funcs_t;
+
+/* data for the GPU devices discovered by Sysman library */
+typedef struct {
+  /* extended driver function pointers */
+  ext_funcs_t ext_funcs;
   /* GPU info for metric labels */
   char *pci_bdf;  // required
   char *pci_dev;  // if GpuInfo
@@ -625,6 +639,45 @@ static int gpu_scan(ze_driver_handle_t *drivers, uint32_t driver_count,
   return RET_OK;
 }
 
+/* query useful external functions address and cast assign them to given struct,
+ * but only if they are really needed due to other driver issues
+ */
+static void get_driver_ext_funcs(int drv_idx, ze_driver_handle_t drv,
+                                 ext_funcs_t *ext_funcs) {
+  /* Smaller counters could wrap multiple times between queries, meaning
+   * that metric values would be bogus. Extended memory query helps
+   * handling that, but doing sample of given duration, instead of
+   * taking new snapshot of the counter values at given point for
+   * comparison.
+   *
+   * TODO:
+   * - After L0 API provides both max BW _and_ counter size, or directly
+   *   max counter wrap interval, add membw ext function only when that
+   *   interval is too small (e.g. smaller than minutes).
+   */
+  struct {
+    const char *name;
+    const char *field;
+    void **addr;
+  } funcs[] = {
+      {"zexSysmanMemoryGetBandwidth", "membw", (void **)(&ext_funcs->membw)}};
+
+  memset(ext_funcs, 0, sizeof(*ext_funcs));
+
+  unsigned int i;
+  for (i = 0; i < STATIC_ARRAY_SIZE(funcs); i++) {
+    ze_result_t ret;
+    if (ret = zeDriverGetExtensionFunctionAddress(drv, funcs[i].name,
+                                                  funcs[i].addr),
+        ret == ZE_RESULT_SUCCESS) {
+      INFO(PLUGIN_NAME ": extended %s = %s()", funcs[i].field, funcs[i].name);
+    } else {
+      INFO(PLUGIN_NAME ": %s() unavailable in driver %d", funcs[i].name,
+           drv_idx);
+    }
+  }
+}
+
 /* Allocate 'scan_count' GPU structs to 'gpus' and fetch Sysman handle & name
  * for them.
  *
@@ -653,6 +706,11 @@ static int gpu_fetch(ze_driver_handle_t *drivers, uint32_t driver_count,
       retval = RET_ZE_DEVICE_GET_FAIL;
       continue;
     }
+    if (!dev_count) {
+      INFO(PLUGIN_NAME ": no devices for driver %d", drv_idx);
+      /* avoid redudant ext funcs messages */
+      continue;
+    }
     ze_device_handle_t *devs;
     devs = scalloc(dev_count, sizeof(*devs));
     if (ret = zeDeviceGet(drivers[drv_idx], &dev_count, devs),
@@ -664,8 +722,12 @@ static int gpu_fetch(ze_driver_handle_t *drivers, uint32_t driver_count,
       retval = RET_ZE_DEVICE_GET_FAIL;
       continue;
     }
+    ext_funcs_t ext_funcs;
+    get_driver_ext_funcs(drv_idx, drivers[drv_idx], &ext_funcs);
+
     /* Get all GPU devices for the driver */
     for (uint32_t dev_idx = 0; dev_idx < dev_count; dev_idx++) {
+      gpus[count].ext_funcs = ext_funcs;
       ze_device_properties_t props = {.pNext = NULL};
       if (ret = zeDeviceGetProperties(devs[dev_idx], &props),
           ret != ZE_RESULT_SUCCESS) {
@@ -1262,6 +1324,7 @@ static void add_bw_gauges(metric_t *metric, metric_family_t *fam, double reads,
 }
 
 /* Report memory modules bandwidth usage, return true for success.
+ * Submit new metrics only when 'submit' is set.
  */
 static bool gpu_mems_bw(gpu_device_t *gpu) {
   uint32_t i, mem_count = 0;
@@ -1311,12 +1374,29 @@ static bool gpu_mems_bw(gpu_device_t *gpu) {
 
   bool ok = false;
   for (i = 0; i < mem_count; i++) {
-    zes_mem_bandwidth_t bw;
-    if (ret = zesMemoryGetBandwidth(mems[i], &bw), ret != ZE_RESULT_SUCCESS) {
-      ERROR(PLUGIN_NAME ": failed to get memory module %d bandwidth => 0x%x", i,
-            ret);
-      ok = false;
-      break;
+    zes_mem_bandwidth_t bw, *old = &gpu->membw[i];
+    if (gpu->ext_funcs.membw) {
+      if (ret = gpu->ext_funcs.membw(mems[i], &bw.readCounter, &bw.writeCounter,
+                                     &bw.maxBandwidth, BW_QUERY_MS),
+          ret == ZE_RESULT_SUCCESS) {
+        old->readCounter = old->writeCounter = 0;
+        // 1 is used to bypass check for old value initialization
+        bw.timestamp = 1000 * BW_QUERY_MS + 1;
+        old->timestamp = 1;
+      } else {
+        INFO(PLUGIN_NAME ": extended membw() failed, use standard one for "
+                         "memory module %d => 0x%x",
+             i, ret);
+        gpu->ext_funcs.membw = NULL;
+      }
+    }
+    if (!gpu->ext_funcs.membw) {
+      if (ret = zesMemoryGetBandwidth(mems[i], &bw), ret != ZE_RESULT_SUCCESS) {
+        ERROR(PLUGIN_NAME ": failed to get memory module %d bandwidth => 0x%x",
+              i, ret);
+        ok = false;
+        break;
+      }
     }
     if (ret = set_mem_labels(mems[i], &metric), ret != ZE_RESULT_SUCCESS) {
       ERROR(PLUGIN_NAME ": failed to get memory module %d properties => 0x%x",
@@ -1334,7 +1414,6 @@ static bool gpu_mems_bw(gpu_device_t *gpu) {
       metric_family_metric_append(&fam_counter, metric);
       reported_base = true;
     }
-    zes_mem_bandwidth_t *old = &gpu->membw[i];
     if (old->timestamp && bw.timestamp > old->timestamp &&
         (config.output & (OUTPUT_RATIO | OUTPUT_RATE))) {
       /* https://spec.oneapi.com/level-zero/latest/sysman/api.html#_CPPv419zes_mem_bandwidth_t
@@ -1348,8 +1427,8 @@ static bool gpu_mems_bw(gpu_device_t *gpu) {
         add_bw_gauges(&metric, &fam_rate, factor * reads, factor * writes);
         reported_rate = true;
       }
-      if ((config.output & OUTPUT_RATIO) && old->maxBandwidth) {
-        double factor = 1.0e6 / (old->maxBandwidth * timediff);
+      if ((config.output & OUTPUT_RATIO) && bw.maxBandwidth) {
+        double factor = 1.0e6 / (bw.maxBandwidth * timediff);
         add_bw_gauges(&metric, &fam_ratio, factor * reads, factor * writes);
         reported_ratio = true;
       }
@@ -2485,7 +2564,7 @@ static int gpu_read(void) {
     if (!disabled->membw && !gpu_mems_bw(gpu)) {
       WARNING(PLUGIN_NAME ": GPU-%d mem BW query fail / no modules => disabled",
               i);
-      gpu->disabled.membw = true;
+      disabled->membw = true;
     }
     if (!disabled->power && !gpu_powers(gpu)) {
       WARNING(PLUGIN_NAME ": GPU-%d power query fail / no domains => disabled",

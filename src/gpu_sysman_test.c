@@ -1,7 +1,7 @@
 /**
  * collectd - src/gpu_sysman_test.c
  *
- * Copyright(c) 2020-2022 Intel Corporation. All rights reserved.
+ * Copyright(c) 2020-2023 Intel Corporation. All rights reserved.
  *
  * Licensed under the same terms and conditions as src/gpu_sysman.c.
  *
@@ -116,12 +116,20 @@ static void set_verbose(unsigned int callmask, unsigned int metricmask) {
   }
 }
 
+#define UNLIMITED_CALLS 0xFFFF
+
 /* set given bit in the 'callbits' call type tracking bitmask
  * and increase 'api_calls' API call counter.
  *
  * return true if given call should be failed (call=limit)
  */
 static bool call_limit(int callbit, const char *name) {
+  if (callbit == UNLIMITED_CALLS) {
+    if (globs.verbose & VERBOSE_CALLS) {
+      fprintf(stderr, "CALL: %s() - unlimited\n", name);
+    }
+    return false;
+  }
   globs.callbits |= 1ul << callbit;
   globs.api_calls++;
 
@@ -564,6 +572,44 @@ ze_result_t zesFabricPortGetThroughput(zes_fabric_port_handle_t handle,
  * (due to them being inside 'old->timestamp' check)
  */
 #define QUERY_MULTI_BITS (1 << 20)
+
+/* ------------------------------------------------------------------------- */
+/* dummy extended functions returning just failures */
+ze_result_t zexSysmanMemoryGetBandwidth(zes_mem_handle_t handle,
+                                        uint64_t *reads, uint64_t *writes,
+                                        uint64_t *maxbw, uint64_t duration) {
+  ze_result_t ret = metric_args_check(
+      UNLIMITED_CALLS, "zexSysmanMemoryGetBandwidth", handle, &dummy);
+  if (ret != ZE_RESULT_SUCCESS)
+    return ret;
+  if (!(reads && writes && maxbw))
+    return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
+  if (duration < 10)
+    return ZE_RESULT_ERROR_INVALID_ARGUMENT;
+  return ZE_RESULT_ERROR_NOT_AVAILABLE;
+}
+
+/* function for providing extended backend specific functions
+ * (no success return nor call limits as failure of this does not block init)
+ */
+ze_result_t zeDriverGetExtensionFunctionAddress(ze_driver_handle_t drv,
+                                                const char *name, void **addr) {
+  if (call_limit(UNLIMITED_CALLS, "zeDriverGetExtensionFunctionAddress"))
+    return ZE_RESULT_ERROR_DEVICE_LOST;
+  if (drv != DRV_HANDLE)
+    return ZE_RESULT_ERROR_INVALID_NULL_HANDLE;
+  if (initialized < L0_DRIVER_INITIALIZED)
+    return ZE_RESULT_ERROR_UNINITIALIZED;
+  if (!(name && addr))
+    return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
+  if (strcmp(name, "zexSysmanMemoryGetBandwidth") != 0)
+    return ZE_RESULT_ERROR_NOT_AVAILABLE;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
+  *addr = &zexSysmanMemoryGetBandwidth;
+#pragma GCC diagnostic pop
+  return ZE_RESULT_SUCCESS;
+}
 
 /* ------------------------------------------------------------------------- */
 /* mock up metrics reporting and validation */
