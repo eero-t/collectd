@@ -2524,6 +2524,46 @@ static int gpu_read(void) {
   return retval;
 }
 
+/* helper to check positive integer config values, returns parsed value or
+ * negative for error */
+static int check_conf_uint(const char *key, const char *value, int minval,
+                           int maxval) {
+  /* because collectd converts config values to floating point strings,
+   * this can't use strtol() to check that value is integer, so simply
+   * just take the integer part
+   */
+  int samples = atoi(value);
+  if (samples < minval || samples > maxval) {
+    ERROR(PLUGIN_NAME ": Invalid '%s' value '%s'", key, value);
+    return -1;
+  }
+  return samples;
+}
+
+/* return parsed output option flags value, or zero to indicate error */
+static output_t parse_output_flags(const char *value) {
+  output_t output = 0;
+  static const char delim[] = ",:/ ";
+  char *save, *flag, *flags = sstrdup(value);
+  for (flag = strtok_r(flags, delim, &save); flag;
+       flag = strtok_r(NULL, delim, &save)) {
+    bool found = false;
+    for (unsigned i = 0; i < STATIC_ARRAY_SIZE(metrics_output); i++) {
+      if (strcasecmp(flag, metrics_output[i].name) == 0) {
+        output |= metrics_output[i].value;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      free(flags);
+      return 0;
+    }
+  }
+  free(flags);
+  return output;
+}
+
 static int gpu_config_parse(const char *key, const char *value) {
   /* all metrics are enabled by default, but user can disable them */
   if (strcasecmp(key, KEY_DISABLE_ENGINE) == 0) {
@@ -2553,38 +2593,13 @@ static int gpu_config_parse(const char *key, const char *value) {
   } else if (strcasecmp(key, KEY_LOG_METRICS) == 0) {
     config.logmetrics = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_METRICS_OUTPUT) == 0) {
-    config.output = 0;
-    static const char delim[] = ",:/ ";
-    char *save, *flag, *flags = sstrdup(value);
-    for (flag = strtok_r(flags, delim, &save); flag;
-         flag = strtok_r(NULL, delim, &save)) {
-      bool found = false;
-      for (unsigned i = 0; i < STATIC_ARRAY_SIZE(metrics_output); i++) {
-        if (strcasecmp(flag, metrics_output[i].name) == 0) {
-          config.output |= metrics_output[i].value;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        free(flags);
-        ERROR(PLUGIN_NAME ": Invalid '%s' config key value '%s'", key, value);
-        return RET_INVALID_CONFIG;
-      }
-    }
-    free(flags);
-    if (!config.output) {
+    if (!(config.output = parse_output_flags(value))) {
       ERROR(PLUGIN_NAME ": Invalid '%s' config key value '%s'", key, value);
       return RET_INVALID_CONFIG;
     }
   } else if (strcasecmp(key, KEY_SAMPLES) == 0) {
-    /* because collectd converts config values to floating point strings,
-     * this can't use strtol() to check that value is integer, so simply
-     * just take the integer part
-     */
-    int samples = atoi(value);
-    if (samples < 1 || samples > MAX_SAMPLES) {
-      ERROR(PLUGIN_NAME ": Invalid " KEY_SAMPLES " value '%s'", value);
+    int samples = check_conf_uint(KEY_SAMPLES, value, 1, MAX_SAMPLES);
+    if (samples < 0) {
       return RET_INVALID_CONFIG;
     }
     /* number of samples cannot be changed without freeing per-GPU
