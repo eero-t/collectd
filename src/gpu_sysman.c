@@ -364,9 +364,8 @@ static int gpu_config_check(void) {
   }
 
   if (config.checks && config.checks < config.samples) {
-    ERROR(PLUGIN_NAME
-          ": new device check interval smaller than samples interval");
-    return RET_TOO_FREQUENT_CHECKS;
+    INFO(PLUGIN_NAME ": " KEY_DEV_CHECKS " < " KEY_SAMPLES " (%d<%d)",
+         config.checks, config.samples);
   }
   return RET_OK;
 }
@@ -754,7 +753,6 @@ static bool add_gpu_labels(gpu_device_t *gpu, zes_device_handle_t dev) {
  */
 static int gpu_scan(zes_driver_handle_t *drivers, uint32_t driver_count,
                     uint32_t *scan_count) {
-  assert(!gpus);
   *scan_count = 0;
   for (uint32_t drv_idx = 0; drv_idx < driver_count; drv_idx++) {
 
@@ -864,22 +862,14 @@ static int gpu_fetch(zes_driver_handle_t *drivers, uint32_t driver_count,
 
 /* Scan Sysman for GPU devices:
  * https://spec.oneapi.io/level-zero/latest/sysman/PROG.html#initialization
- * Return RET_OK for success, (negative) error value otherwise
+ *
+ * If no more found than given threshold, return RET_NO_GPUS,
+ * otherwise (re)allocate GPU structs & return GPU count for success,
+ * or (negative) error value
  */
-static int gpu_init(void) {
-  if (gpus) {
-    NOTICE(PLUGIN_NAME ": skipping extra gpu_init() call");
-    return RET_OK;
-  }
+static int gpu_reinit(uint32_t threshold) {
   ze_result_t ret;
-  /* backend versions supporting zesInit(), but older than 23.26.26690.12
-   * still need this env var.
-   */
-  setenv("ZES_ENABLE_SYSMAN", "1", 1);
-  if (ret = zesInit(0), ret != ZE_RESULT_SUCCESS) {
-    ERROR(PLUGIN_NAME ": Level Zero Sysman init failed => 0x%x", ret);
-    return RET_ZES_INIT_FAIL;
-  }
+
   /* Discover all the drivers */
   uint32_t driver_count = 0;
   if (ret = zesDriverGet(&driver_count, NULL), ret != ZE_RESULT_SUCCESS) {
@@ -905,13 +895,23 @@ static int gpu_init(void) {
     free(drivers);
     return fail;
   }
+
+  /* no more devices than earlier / need to free old structs? */
+  if (count <= threshold) {
+    free(drivers);
+    return RET_NO_GPUS;
+  }
+  INFO(PLUGIN_NAME ": (re)init GPU structs (%d > %d)", count, threshold);
+  if (gpus) {
+    INFO(PLUGIN_NAME ": free old structs");
+    gpu_config_free();
+  }
+
   uint32_t ignored = 0, scanned = count;
-  if (count) {
-    /* ...and allocate & fetch data for them */
-    if ((fail = gpu_fetch(drivers, driver_count, &count, &ignored)) < 0) {
-      free(drivers);
-      return fail;
-    }
+  /* allocate & fetch info for the new devices */
+  if ((fail = gpu_fetch(drivers, driver_count, &count, &ignored)) < 0) {
+    free(drivers);
+    return fail;
   }
   free(drivers);
   if (scanned > count) {
@@ -922,9 +922,33 @@ static int gpu_init(void) {
     WARNING(PLUGIN_NAME ": %d GPUs appeared after first scan (are ignored)",
             ignored);
   }
-  if (!count) {
+  return count;
+}
+
+/* Scan GPUs, alloc structs for them / initialize plugin config
+ *
+ * Return RET_OK for success, (negative) error value otherwise
+ */
+static int gpu_init(void) {
+  if (gpus) {
+    NOTICE(PLUGIN_NAME ": skipping extra gpu_init() call");
+    return RET_OK;
+  }
+  ze_result_t ret;
+  /* backend versions supporting zesInit(), but older than 23.26.26690.12
+   * still need this env var.
+   */
+  setenv("ZES_ENABLE_SYSMAN", "1", 1);
+  if (ret = zesInit(0), ret != ZE_RESULT_SUCCESS) {
+    ERROR(PLUGIN_NAME ": Level Zero Sysman init failed => 0x%x", ret);
+    return RET_ZES_INIT_FAIL;
+  }
+
+  int count = gpu_reinit(0);
+
+  if (count < 0) {
     ERROR(PLUGIN_NAME ": no GPU devices found with Level-Zero Sysman API");
-    return RET_NO_GPUS;
+    return count;
   }
   return gpu_config_init(count);
 }
@@ -2523,7 +2547,28 @@ static void check_gpu_metrics(uint32_t gpu, const gpu_disable_t *initial,
   list_gpu_metrics(disabled);
 }
 
+/* check for new GPUs at specified call interval, realloc structs if new found
+ */
+static void check_for_new_devs(void) {
+  if (!config.checks) {
+    return;
+  }
+  static uint64_t check_count;
+  if (check_count++ % config.checks != 0) {
+    return;
+  }
+
+  int count = gpu_reinit(gpu_count);
+  if (count != RET_NO_GPUS) {
+    INFO(PLUGIN_NAME ": GPU count check: %d -> %d", gpu_count, count);
+  }
+  if (count > 0) {
+    gpu_config_init(count);
+  }
+}
+
 static int gpu_read(void) {
+  check_for_new_devs();
   /* no metrics yet */
   int retval = RET_NO_METRICS;
   /* go through all GPUs */
