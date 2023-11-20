@@ -1523,6 +1523,8 @@ int main(int argc, const char **argv) {
 
   /* metrics query & value checks */
 
+  /* interval must be 1 to avoid API call counts changing with multisampling */
+  assert(registry.config("DeviceChecks", "1") == 0);
   assert(registry.config("DisableSeparateErrors", "false") == 0);
   set_verbose(VERBOSE_CALLS_METRICS, VERBOSE_METRICS_NORMAL);
   assert(registry.config("LogMetrics", "true") == 0);
@@ -1578,6 +1580,16 @@ int main(int argc, const char **argv) {
   change_sampling_reset("8");
   assert(test_multisampled_queries(3, 8) == 0);
   fprintf(stderr, "metrics sampling: PASS\n\n");
+
+  /* need to disable device count change checks as next part adds errors
+   * to init calls, which requires resetting "api_calls" counter
+   */
+  globs.api_calls = 0;
+  assert(registry.config("DeviceChecks", "0") == 0);
+  fprintf(stderr, "Get relevant API call count with dev checks disabled...\n");
+  assert(registry.read() == 0);
+  assert(globs.warnings == 0);
+  api_calls = globs.api_calls;
 
   /* metrics error handling checks */
 
