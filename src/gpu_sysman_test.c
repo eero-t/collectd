@@ -153,33 +153,35 @@ typedef enum {
 } initialized_t;
 
 static initialized_t initialized = L0_NOT_INITIALIZED;
+static ze_result_t check_set_initialized(initialized_t required,
+                                         initialized_t value) {
+  if (initialized < required)
+    return ZE_RESULT_ERROR_UNINITIALIZED;
+  if (value > initialized)
+    initialized = value;
+  return ZE_RESULT_SUCCESS;
+}
 
 ze_result_t zeInit(ze_init_flags_t flags) {
   if (call_limit(0, "zeInit"))
     return ZE_RESULT_ERROR_DEVICE_LOST;
   if (flags && flags != ZE_INIT_FLAG_GPU_ONLY)
     return ZE_RESULT_ERROR_INVALID_ENUMERATION;
-  initialized = L0_IS_INITIALIZED;
-  return ZE_RESULT_SUCCESS;
+  return check_set_initialized(0, L0_IS_INITIALIZED);
 }
 
 ze_result_t zeDriverGet(uint32_t *count, ze_driver_handle_t *handles) {
   if (call_limit(1, "zeDriverGet"))
     return ZE_RESULT_ERROR_DEVICE_LOST;
-  if (initialized < L0_IS_INITIALIZED)
-    return ZE_RESULT_ERROR_UNINITIALIZED;
   if (!count)
     return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
-  if (!*count) {
-    *count = 1;
-    return ZE_RESULT_SUCCESS;
+  if (*count) {
+    if (!handles)
+      return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
+    handles[0] = DRV_HANDLE;
   }
   *count = 1;
-  if (!handles)
-    return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
-  initialized = L0_DRIVER_INITIALIZED;
-  handles[0] = DRV_HANDLE;
-  return ZE_RESULT_SUCCESS;
+  return check_set_initialized(L0_IS_INITIALIZED, L0_DRIVER_INITIALIZED);
 }
 
 ze_result_t zeDeviceGet(ze_driver_handle_t drv, uint32_t *count,
@@ -188,20 +190,15 @@ ze_result_t zeDeviceGet(ze_driver_handle_t drv, uint32_t *count,
     return ZE_RESULT_ERROR_DEVICE_LOST;
   if (drv != DRV_HANDLE)
     return ZE_RESULT_ERROR_INVALID_NULL_HANDLE;
-  if (initialized < L0_DRIVER_INITIALIZED)
-    return ZE_RESULT_ERROR_UNINITIALIZED;
   if (!count)
     return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
-  if (!*count) {
-    *count = 1;
-    return ZE_RESULT_SUCCESS;
+  if (*count) {
+    if (!handles)
+      return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
+    handles[0] = DEV_HANDLE;
   }
   *count = 1;
-  if (!handles)
-    return ZE_RESULT_ERROR_INVALID_NULL_POINTER;
-  initialized = L0_DEVICE_INITIALIZED;
-  handles[0] = DEV_HANDLE;
-  return ZE_RESULT_SUCCESS;
+  return check_set_initialized(L0_DRIVER_INITIALIZED, L0_DEVICE_INITIALIZED);
 }
 
 /* mock up level-zero core device handling API, called during gpu_init() */
