@@ -58,6 +58,10 @@
 #else
 #pragma message                                                                \
     "glob / libgen headers missing => no 'dev_file' / 'pci_dev' labels"
+#if HAVE_GLOB_H
+/* needed also by card_count() */
+#include <glob.h>
+#endif
 #endif
 
 #include "plugin.h"
@@ -744,6 +748,53 @@ static bool add_gpu_labels(gpu_device_t *gpu, zes_device_handle_t dev) {
 #endif
   return true;
 }
+
+#if HAVE_GLOB_H
+/* Return count of Intel DRM device control files
+ */
+static int card_count(void) {
+  glob_t sysfs;
+  int count = 0;
+#define UEVENT_GLOB "/sys/class/drm/card*/device/uevent"
+  if (glob(UEVENT_GLOB, 0, NULL, &sysfs) != 0) {
+    globfree(&sysfs);
+    return count;
+  }
+
+#define PCIID_LINE "PCI_ID="
+#define INTEL_PCIID "8086:"
+  const size_t pciid_size = strlen(INTEL_PCIID);
+  const size_t prefix_size = strlen(PCIID_LINE);
+
+  for (size_t i = 0; i < sysfs.gl_pathc; i++) {
+    FILE *fp;
+    const char *path = sysfs.gl_pathv[i];
+    if (!(fp = fopen(path, "r"))) {
+      INFO(PLUGIN_NAME ": card counting - opening '%s' failed", path);
+      continue;
+    }
+
+    size_t len = 0;
+    char *line = NULL;
+    while (getline(&line, &len, fp) > 0) {
+      if (strncmp(line, PCIID_LINE, prefix_size) != 0) {
+        continue;
+      }
+      if (strncmp(line + prefix_size, INTEL_PCIID, pciid_size) == 0) {
+        count++;
+      }
+      // INFO(PLUGIN_NAME ": '%s' => card count: %d", path, count);
+      break;
+    }
+    free(line);
+    fclose(fp);
+  }
+  globfree(&sysfs);
+#undef UEVENT_GLOB
+#undef PCIID_LINE
+  return count;
+}
+#endif
 
 /* Scan how many GPU devices Sysman reports in total, and set 'scan_count'
  * accordingly
@@ -2558,6 +2609,19 @@ static void check_for_new_devs(void) {
     return;
   }
 
+#if HAVE_GLOB_H /* device counting depends on glob() */
+  static int total_count;
+  int count = card_count();
+  /* did GPU PF+VF count change? */
+  if (total_count && count != total_count) {
+    /* => reinit L0 and GPU structs */
+    INFO(PLUGIN_NAME ": GPU count change (%d->%d): re-init", total_count,
+         count);
+    gpu_config_free();
+    gpu_init();
+  }
+  total_count = count;
+#else
   int count = gpu_reinit(gpu_count);
   if (count != RET_NO_GPUS) {
     INFO(PLUGIN_NAME ": GPU count check: %d -> %d", gpu_count, count);
@@ -2565,6 +2629,7 @@ static void check_for_new_devs(void) {
   if (count > 0) {
     gpu_config_init(count);
   }
+#endif
 }
 
 static int gpu_read(void) {
