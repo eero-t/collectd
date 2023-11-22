@@ -51,9 +51,10 @@
  */
 #define ADD_DEV_FILE 1
 #if ADD_DEV_FILE
-#include <glob.h>
 #include <libgen.h>
 #endif
+/* needed also by card_count() */
+#include <glob.h>
 
 #include "collectd.h"
 #include "plugin.h"
@@ -606,6 +607,51 @@ static bool add_gpu_labels(gpu_device_t *gpu, zes_device_handle_t dev) {
 #undef BDF_LINE
 #endif
   return true;
+}
+
+/* Return count of Intel DRM device control files
+ */
+static int card_count(void) {
+  glob_t sysfs;
+  int count = 0;
+#define UEVENT_GLOB "/sys/class/drm/card*/device/uevent"
+  if (glob(UEVENT_GLOB, 0, NULL, &sysfs) != 0) {
+    globfree(&sysfs);
+    return count;
+  }
+
+#define PCIID_LINE "PCI_ID="
+#define INTEL_PCIID "8086:"
+  const size_t pciid_size = strlen(INTEL_PCIID);
+  const size_t prefix_size = strlen(PCIID_LINE);
+
+  for (size_t i = 0; i < sysfs.gl_pathc; i++) {
+    FILE *fp;
+    const char *path = sysfs.gl_pathv[i];
+    if (!(fp = fopen(path, "r"))) {
+      INFO(PLUGIN_NAME ": card counting - opening '%s' failed", path);
+      continue;
+    }
+
+    size_t len = 0;
+    char *line = NULL;
+    while (getline(&line, &len, fp) > 0) {
+      if (strncmp(line, PCIID_LINE, prefix_size) != 0) {
+        continue;
+      }
+      if (strncmp(line + prefix_size, INTEL_PCIID, pciid_size) == 0) {
+        count++;
+      }
+      // INFO(PLUGIN_NAME ": '%s' => card count: %d", path, count);
+      break;
+    }
+    free(line);
+    fclose(fp);
+  }
+  globfree(&sysfs);
+#undef UEVENT_GLOB
+#undef PCIID_LINE
+  return count;
 }
 
 /* Scan how many GPU devices Sysman reports in total, and set 'scan_count'
@@ -2465,13 +2511,17 @@ static void check_for_new_devs(void) {
     return;
   }
 
-  int count = gpu_reinit(gpu_count);
-  if (count != RET_NO_GPUS) {
-    INFO(PLUGIN_NAME ": GPU count check: %d -> %d", gpu_count, count);
+  static int total_count;
+  int count = card_count();
+  /* did GPU PF+VF count change? */
+  if (total_count && count != total_count) {
+    /* => reinit L0 and GPU structs */
+    INFO(PLUGIN_NAME ": GPU count change (%d->%d): re-init", total_count,
+         count);
+    gpu_config_free();
+    gpu_init();
   }
-  if (count > 0) {
-    gpu_config_init(count);
-  }
+  total_count = count;
 }
 
 static int gpu_read(void) {
