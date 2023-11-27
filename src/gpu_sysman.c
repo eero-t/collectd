@@ -72,6 +72,7 @@
 #define RET_ZE_DRIVER_GET_FAIL -5
 #define RET_ZE_DEVICE_GET_FAIL -6
 #define RET_ZE_DEVICE_PROPS_FAIL -7
+#define RET_TOO_FREQUENT_CHECKS -8
 #define RET_NO_GPUS -9
 
 /* GPU metrics to disable */
@@ -146,6 +147,7 @@ static struct {
   gpu_disable_t disabled;
   output_t output;
   uint32_t samples;
+  uint32_t checks;
 } config;
 
 /* Sysman GPU plugin config options (defines to ease catching typos) */
@@ -161,6 +163,7 @@ static struct {
 #define KEY_DISABLE_TEMP "DisableTemperature"
 #define KEY_DISABLE_THROTTLE "DisableThrottleTime"
 
+#define KEY_DEV_CHECKS "DeviceChecks"
 #define KEY_LOG_GPU_INFO "LogGpuInfo"
 #define KEY_LOG_METRICS "LogMetrics"
 #define KEY_METRICS_OUTPUT "MetricsOutput"
@@ -322,6 +325,13 @@ static int gpu_config_check(void) {
       INFO("- query / submit interval: %.2fs", interval);
     }
 
+    if (config.checks > 0) {
+      INFO("- device count change check interval: %.2fs",
+           interval * config.checks);
+    } else {
+      INFO("- no checks for new devices");
+    }
+
     unsigned i;
     INFO("'" KEY_METRICS_OUTPUT "' variants:");
     for (i = 0; i < STATIC_ARRAY_SIZE(metrics_output); i++) {
@@ -345,6 +355,12 @@ static int gpu_config_check(void) {
     ERROR(PLUGIN_NAME ": all metrics disabled");
     return RET_NO_METRICS;
   }
+
+  if (config.checks && config.checks < config.samples) {
+    ERROR(PLUGIN_NAME
+          ": new device check interval smaller than samples interval");
+    return RET_TOO_FREQUENT_CHECKS;
+  }
   return RET_OK;
 }
 
@@ -359,10 +375,12 @@ static int gpu_config_init(unsigned int count) {
   if (!config.samples) {
     config.samples = 1;
   }
-  if (gpu_config_check()) {
+  int ret = gpu_config_check();
+  if (ret) {
     gpu_config_free();
-    return RET_NO_METRICS;
+    return ret;
   }
+
   unsigned int i;
   for (i = 0; i < count; i++) {
     gpus[i].disabled = config.disabled;
@@ -2588,6 +2606,14 @@ static int gpu_config_parse(const char *key, const char *value) {
     config.disabled.temp = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_DISABLE_THROTTLE) == 0) {
     config.disabled.throttle = IS_TRUE(value);
+  } else if (strcasecmp(key, KEY_DEV_CHECKS) == 0) {
+    /* this is interval multiple. Use 1 day as limit with 1s interval assumption
+     */
+    int checks = check_conf_uint(KEY_DEV_CHECKS, value, 0, 60 * 60 * 24);
+    if (checks < 0) {
+      return RET_INVALID_CONFIG;
+    }
+    config.checks = checks;
   } else if (strcasecmp(key, KEY_LOG_GPU_INFO) == 0) {
     config.gpuinfo = IS_TRUE(value);
   } else if (strcasecmp(key, KEY_LOG_METRICS) == 0) {
@@ -2623,8 +2649,9 @@ void module_register(void) {
       KEY_DISABLE_ENGINE, KEY_DISABLE_ENGINE_SINGLE, KEY_DISABLE_FABRIC,
       KEY_DISABLE_FREQ,   KEY_DISABLE_MEM,           KEY_DISABLE_MEMBW,
       KEY_DISABLE_POWER,  KEY_DISABLE_RAS,           KEY_DISABLE_RAS_SEPARATE,
-      KEY_DISABLE_TEMP,   KEY_DISABLE_THROTTLE,      KEY_METRICS_OUTPUT,
-      KEY_LOG_GPU_INFO,   KEY_LOG_METRICS,           KEY_SAMPLES};
+      KEY_DISABLE_TEMP,   KEY_DISABLE_THROTTLE,      KEY_DEV_CHECKS,
+      KEY_LOG_GPU_INFO,   KEY_LOG_METRICS,           KEY_METRICS_OUTPUT,
+      KEY_SAMPLES};
   const int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
   plugin_register_config(PLUGIN_NAME, gpu_config_parse, config_keys,
