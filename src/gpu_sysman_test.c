@@ -970,6 +970,8 @@ static int test_config_keys(bool check_nonbool, bool enable_metrics,
     const char *value;
     bool success;
   } test[] = {
+      {"DeviceChecks", "-1", false},
+      {"DeviceChecks", "999", true},
       {"MetricsOutput", "base", true},
       {"MetricsOutput", "rate", true},
       {"MetricsOutput", "RatiO", true},
@@ -981,6 +983,7 @@ static int test_config_keys(bool check_nonbool, bool enable_metrics,
       {"Samples", "-1", false},
       {"Samples", "8", true},
       /* set back to default */
+      {"DeviceChecks", "0", true},
       {"MetricsOutput", "base:rate:ratio", true},
       {"Samples", "1", true},
   };
