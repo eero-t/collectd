@@ -3711,6 +3711,18 @@ slower, and are read only at submit intervals.  If collecting of the
 sampled values is disabled, it is better to set Samples to 1
 (default).
 
+=item B<DeviceChecks>
+
+Interval at which Sysman plugin checks system for new devices. This is
+given as multiplier for plugin B<Interval> value, same as B<Samples>.
+As there's some overhead from it, a value larger than B<Samples> and
+at least few seconds in total, is recommended.
+
+New devices could appear, if GPU is split to VF devices using SR-IOV,
+or GPU kernel module is installed, after collectd is already running.
+Normally collectd can just be restarted in these cases, so automatic
+checking for new devices is disabled (zero) by default.
+
 =item B<LogGpuInfo>
 
 If enabled, plugin logs at start some information about plugin
