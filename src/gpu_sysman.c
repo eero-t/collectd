@@ -1547,8 +1547,8 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
   }
 
   metric_family_t fam_freq = {
-      .help = "Sampled HW frequency (in MHz)",
-      .name = METRIC_PREFIX "frequency_mhz",
+      .help = "Sampled HW frequency (in Hz)",
+      .name = METRIC_PREFIX "frequency_hz",
       .type = METRIC_TYPE_GAUGE,
   };
   metric_family_t fam_ratio = {
@@ -1586,14 +1586,14 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
 
     if (config.samples < 2) {
       set_freq_throttled_label(&metric, gpu->frequency[0][i].throttleReasons);
-      /* negative value = unsupported:
-       * https://spec.oneapi.com/level-zero/latest/sysman/api.html#_CPPv416zes_freq_state_t
+      /* Values are in Hz. Negative value = unsupported:
+       * https://spec.oneapi.io/level-zero/latest/sysman/api.html#zes-freq-state-t
        */
       value = gpu->frequency[0][i].request;
       if (value >= 0) {
         metric_label_set(&metric, "type", "request");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = value;
+          metric.value.gauge = 1e6 * value;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
@@ -1607,7 +1607,7 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
       if (value >= 0) {
         metric_label_set(&metric, "type", "actual");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = value;
+          metric.value.gauge = 1e6 * value;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
@@ -1646,7 +1646,7 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
         metric_label_set(&metric, "type", "request");
         metric_label_set(&metric, "function", "min");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = req_min;
+          metric.value.gauge = 1e6 * req_min;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
@@ -1657,7 +1657,7 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
         }
         metric_label_set(&metric, "function", "max");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = req_max;
+          metric.value.gauge = 1e6 * req_max;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
@@ -1671,7 +1671,7 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
         metric_label_set(&metric, "type", "actual");
         metric_label_set(&metric, "function", "min");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = act_min;
+          metric.value.gauge = 1e6 * act_min;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
@@ -1682,7 +1682,7 @@ static bool gpu_freqs(gpu_device_t *gpu, unsigned int cache_idx) {
         }
         metric_label_set(&metric, "function", "max");
         if (config.output & OUTPUT_BASE) {
-          metric.value.gauge = act_max;
+          metric.value.gauge = 1e6 * act_max;
           metric_family_metric_append(&fam_freq, metric);
           reported_base = true;
         }
